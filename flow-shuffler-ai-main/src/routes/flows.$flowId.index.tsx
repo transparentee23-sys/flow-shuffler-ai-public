@@ -1,241 +1,282 @@
-import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
-import { Edit, Play, Sparkles, Trash2 } from "lucide-react";
+import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
+import { Loader as Loader2, X } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
-import { AppHeader } from "@/components/AppHeader";
+import { ObjectCube, type Piece } from "@/components/cube/ObjectCube";
 import { ThemeApplier } from "@/components/ThemeApplier";
-import { Cube, type CubePieceState } from "@/components/cube/Cube";
+import { breakdownTask } from "@/lib/ai.functions";
 import { useT, getLang } from "@/lib/i18n";
-import { colorForFlow, remainingDuration, spentDuration } from "@/lib/utils-flow";
-import { flowSummary } from "@/lib/ai.functions";
+import { colorForFlow, uid } from "@/lib/utils-flow";
+import type { Task } from "@/lib/types";
 
 export const Route = createFileRoute("/flows/$flowId/")({
   head: () => ({ meta: [{ title: "Flow — Shufflow" }] }),
-  component: FlowDetail,
+  component: FlowOverview,
 });
 
-function FlowDetail() {
+function FlowOverview() {
   const { flowId } = useParams({ from: "/flows/$flowId/" });
   const t = useT();
   const navigate = useNavigate();
   const flow = useAppStore((s) => s.flows.find((f) => f.id === flowId));
-  const deleteFlow = useAppStore((s) => s.deleteFlow);
-  const summarize = useServerFn(flowSummary);
+  const upsertFlow = useAppStore((s) => s.upsertFlow);
+  const breakdown = useServerFn(breakdownTask);
 
-  const [overview, setOverview] = useState<{ headline: string; bullets: string[] } | null>(null);
+  const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const done = useMemo(
-    () => flow?.tasks.flatMap((tk) => tk.steps.filter((s) => s.isCompleted).map((s) => s.title)) ?? [],
-    [flow],
-  );
-  const todo = useMemo(
-    () => flow?.tasks.flatMap((tk) => tk.steps.filter((s) => !s.isCompleted).map((s) => s.title)) ?? [],
-    [flow],
-  );
+  const tasks = flow?.tasks ?? [];
+  const pieces: Piece[] = useMemo(() => {
+    const list: Piece[] = tasks.slice(0, 7).map((tk) => ({
+      id: tk.id,
+      done: tk.status === "completed",
+      active: tk.status === "in-progress",
+      icon: <span className="text-xs">{tk.emoji}</span>,
+    }));
+    // Add a transparent "create" slot if room
+    if (list.length < 8) list.push({ id: "__create__", done: false, icon: <span className="text-base opacity-40">+</span> });
+    return list;
+  }, [tasks]);
 
-  useEffect(() => {
-    if (!flow) return;
-    let cancelled = false;
-    setLoading(true);
-    summarize({
-      data: { title: flow.title, done, todo, lang: getLang() },
-    })
-      .then((r) => !cancelled && setOverview(r))
-      .catch(() => {})
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flowId]);
+  const doneCount = pieces.filter((p) => p.done).length;
+  const explode = 0.4 * (1 - doneCount / Math.max(1, pieces.length));
 
   if (!flow) {
     return (
-      <div className="p-8 text-center">
-        <p className="text-muted-foreground">{t("flow_not_found")}</p>
+      <div className="min-h-screen grid place-items-center">
+        <p className="text-sm text-muted-foreground">{t("flow_not_found")}</p>
       </div>
     );
   }
 
   const accent = colorForFlow(flow);
-  const finished = flow.tasks.filter((x) => x.status === "completed").length;
-  const unfinished = flow.tasks.length - finished;
-  const spent = spentDuration(flow);
-  const left = remainingDuration(flow);
-  const sessions = flow.sessions ?? [];
-  const lastSession = sessions[sessions.length - 1];
 
-  // Cube pieces: reassemble as tasks complete
-  const cubePieces: CubePieceState[] = useMemo(() => {
-    const list = flow.tasks.slice(0, 8).map((tk) => ({
-      id: tk.id,
-      done: tk.status === "completed",
-    }));
-    return list;
-  }, [flow.tasks]);
-  const donePieces = cubePieces.filter((p) => p.done).length;
-  const totalPieces = cubePieces.length || 1;
-  const explode = 0.6 * (1 - donePieces / totalPieces);
+  const handlePieceClick = (id: string) => {
+    if (id === "__create__") {
+      setCreating(true);
+      return;
+    }
+    setSelectedPiece(id);
+  };
+
+  const createTask = async () => {
+    const title = draft.trim();
+    if (!title || !flow) return;
+    setLoading(true);
+    const newId = uid();
+    try {
+      const res = await breakdown({
+        data: { title, lang: getLang() },
+      });
+      const task: Task = {
+        id: newId,
+        title,
+        emoji: res.emoji || "✨",
+        status: "pending",
+        priority: "normal",
+        steps: res.steps.map((s) => ({
+          id: uid(),
+          title: s.title,
+          durationMinutes: s.durationMinutes,
+          isCompleted: false,
+        })),
+        isRecurring: false,
+        recurrence: { kind: "one-time" },
+      };
+      upsertFlow({ ...flow, tasks: [...flow.tasks, task] });
+      setDraft("");
+      setCreating(false);
+      // Enter the new task's run mode
+      if (typeof window !== "undefined") sessionStorage.setItem("startTaskId", newId);
+      navigate({ to: "/flows/$flowId/run", params: { flowId: flow.id } });
+    } catch {
+      toast.error(t("ai_failed"));
+      const task: Task = {
+        id: newId,
+        title,
+        emoji: "✨",
+        status: "pending",
+        priority: "normal",
+        steps: [{ id: uid(), title, durationMinutes: 15, isCompleted: false }],
+        isRecurring: false,
+        recurrence: { kind: "one-time" },
+      };
+      upsertFlow({ ...flow, tasks: [...flow.tasks, task] });
+      setDraft("");
+      setCreating(false);
+      if (typeof window !== "undefined") sessionStorage.setItem("startTaskId", newId);
+      navigate({ to: "/flows/$flowId/run", params: { flowId: flow.id } });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectedTask = tasks.find((tk) => tk.id === selectedPiece);
 
   return (
-    <div className="pb-32" data-accent={accent}>
+    <div className="min-h-screen flex flex-col" data-accent={accent}>
       <ThemeApplier override={accent} />
-      <AppHeader back title={flow.title} showNav={false} />
-      <div className="px-5 space-y-5">
-        <div className="flex flex-col items-center pt-2 pb-4">
-          <Cube size={130} pieces={cubePieces} explode={explode} />
-          <div className="mt-3 text-center">
-            <h1 className="text-lg font-semibold break-words">{flow.title}</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {donePieces}/{cubePieces.length} {t("cube_progress")}
-            </p>
+
+      {/* Minimal header — just exit */}
+      <div className="flex justify-end p-5">
+        <button
+          onClick={() => navigate({ to: "/" })}
+          className="size-10 rounded-full grid place-items-center hover:bg-muted transition"
+          aria-label={t("close")}
+        >
+          <X className="size-5" />
+        </button>
+      </div>
+
+      {/* The Flow Cube — the organizing structure */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6">
+        <p className="text-xs uppercase tracking-[0.15em] text-muted-foreground/60 mb-1">
+          {t("obj_hint_flow")}
+        </p>
+        <h1 className="text-lg font-medium tracking-tight mb-8 text-center max-w-xs break-words">
+          {flow.title}
+        </h1>
+
+        <ObjectCube
+          state="flow"
+          size={220}
+          pieces={pieces}
+          explode={explode}
+          hint={t("obj_add_piece")}
+          onPieceClick={handlePieceClick}
+        />
+
+        <p className="mt-6 text-xs text-muted-foreground/70">
+          {doneCount}/{pieces.length} {t("obj_pieces_count")} ·{" "}
+          {pieces.length - doneCount} {t("obj_active_pieces")} · {doneCount}{" "}
+          {t("obj_completed_pieces")}
+        </p>
+      </div>
+
+      {/* Selected piece detail — progressive disclosure */}
+      {selectedTask && (
+        <PieceDetail
+          task={selectedTask}
+          onClose={() => setSelectedPiece(null)}
+          onStart={() => {
+            if (typeof window !== "undefined") sessionStorage.setItem("startTaskId", selectedTask.id);
+            navigate({ to: "/flows/$flowId/run", params: { flowId: flow.id } });
+          }}
+        />
+      )}
+
+      {/* Create piece — expanding input */}
+      {creating && (
+        <div className="fixed inset-0 z-40 bg-background/70 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="w-full max-w-sm">
+            <div className="rounded-3xl bg-card border border-border/60 p-6 shadow-2xl">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                {t("obj_add_piece")}
+              </p>
+              <p className="text-sm text-foreground/80 mb-4">{t("obj_create_prompt")}</p>
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    createTask();
+                  }
+                }}
+                placeholder={t("obj_create_placeholder")}
+                rows={2}
+                className="w-full rounded-2xl bg-muted/50 border border-border/60 p-3 text-sm outline-none focus:ring-2 focus:ring-brand/30 resize-none"
+              />
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={createTask}
+                  disabled={loading || !draft.trim()}
+                  className="flex-1 h-12 rounded-2xl bg-brand text-brand-foreground font-medium disabled:opacity-50 inline-flex items-center justify-center gap-2"
+                >
+                  {loading ? <Loader2 className="size-4 animate-spin" /> : null}
+                  {loading ? t("obj_decomposing") : t("obj_enter")}
+                </button>
+                <button
+                  onClick={() => setCreating(false)}
+                  className="h-12 px-4 rounded-2xl bg-muted text-sm font-medium"
+                >
+                  {t("cancel")}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-
-
-        <div className="grid grid-cols-2 gap-3">
-          <Stat label={t("finished")} value={`${finished}`} />
-          <Stat label={t("unfinished")} value={`${unfinished}`} />
-          <Stat label={t("time_spent")} value={`${spent}m`} />
-          <Stat label={t("time_to_go")} value={`${left}m`} />
-          <Stat label={t("actual_time")} value={`${Math.round(flow.actualMinutesSpent ?? 0)}m`} />
-          <Stat label={t("times_completed")} value={`${flow.completionCount ?? 0}`} />
-          <Stat
-            label={t("last_session")}
-            value={lastSession ? `${Math.round(lastSession.minutes)}m` : "—"}
-          />
-          <Stat label={t("sessions_count")} value={`${sessions.length}`} />
-        </div>
-
-        {sessions.length > 0 && (
-          <section className="rounded-3xl bg-card border border-border/60 p-4">
-            <h2 className="text-sm font-semibold mb-2">{t("recent_sessions")}</h2>
-            <ul className="divide-y divide-border">
-              {sessions.slice(-5).reverse().map((s, i) => (
-                <li key={i} className="py-2 flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {new Date(s.ts).toLocaleString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  <span className="font-medium tabular-nums">{Math.round(s.minutes)}m</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        <section className="rounded-3xl bg-card border border-border/60 p-4">
-          <h2 className="text-sm font-semibold inline-flex items-center gap-2">
-            <Sparkles className="size-4 text-brand" /> {t("things_to_do")}
-          </h2>
-          {loading && !overview ? (
-            <div className="mt-3 space-y-2">
-              <div className="h-3 rounded bg-muted animate-pulse w-3/4" />
-              <div className="h-3 rounded bg-muted animate-pulse w-2/3" />
-            </div>
-          ) : overview ? (
-            <div className="mt-3">
-              <p className="text-sm">{overview.headline}</p>
-              <ul className="mt-2 space-y-1.5">
-                {overview.bullets.map((b, i) => (
-                  <li key={i} className="text-sm text-muted-foreground flex gap-2">
-                    <span className="text-brand">•</span>
-                    <span>{b}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <p className="mt-2 text-xs text-muted-foreground">—</p>
-          )}
-        </section>
-
-        <section className="space-y-2">
-          {flow.tasks.map((tk) => {
-            const tDone = tk.steps.filter((s) => s.isCompleted).length;
-            const isDone = tk.status === "completed";
-            return (
-              <button
-                key={tk.id}
-                onClick={() => {
-                  if (typeof window !== "undefined") {
-                    sessionStorage.setItem("startTaskId", tk.id);
-                  }
-                  navigate({
-                    to: "/flows/$flowId/run",
-                    params: { flowId: flow.id },
-                  });
-                }}
-                disabled={isDone}
-                className={`w-full text-left rounded-2xl bg-card border border-border/60 p-4 flex items-center gap-3 transition ${
-                  isDone ? "opacity-60" : "hover:border-brand/40"
-                }`}
-              >
-                <div className="size-10 rounded-xl bg-brand-soft grid place-items-center text-xl shrink-0">
-                  {tk.emoji}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium break-words">{tk.title}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {tDone}/{tk.steps.length} · {tk.steps.reduce((a, s) => a + s.durationMinutes, 0)}m
-                  </p>
-                </div>
-                {!isDone && (
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-brand">
-                    <Play className="size-3.5 fill-current" /> {t("start")}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </section>
-      </div>
-
-      <div className="fixed bottom-0 inset-x-0 max-w-xl mx-auto p-5 pt-3 bg-gradient-to-t from-background via-background/95 to-transparent">
-        <div className="flex gap-2">
-          <Link
-            to="/flows/$flowId/run"
-            params={{ flowId: flow.id }}
-            className="flex-1 h-14 rounded-2xl bg-brand text-brand-foreground font-semibold inline-flex items-center justify-center gap-2"
-          >
-            <Play className="size-5 fill-current" /> {t("play")}
-          </Link>
-          <Link
-            to="/flows/$flowId/edit"
-            params={{ flowId: flow.id }}
-            className="h-14 px-5 rounded-2xl bg-muted font-medium inline-flex items-center gap-2"
-          >
-            <Edit className="size-4" /> {t("edit")}
-          </Link>
-          <button
-            onClick={() => {
-              deleteFlow(flow.id);
-              toast.success(t("flow_deleted"));
-              navigate({ to: "/" });
-            }}
-            className="h-14 px-4 rounded-2xl bg-muted text-destructive inline-flex items-center"
-            aria-label={t("delete")}
-          >
-            <Trash2 className="size-4" />
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/* ---------- Piece detail — revealed context ---------- */
+function PieceDetail({
+  task,
+  onClose,
+  onStart,
+}: {
+  task: Task;
+  onClose: () => void;
+  onStart: () => void;
+}) {
+  const t = useT();
+  const doneSteps = task.steps.filter((s) => s.isCompleted).length;
   return (
-    <div className="rounded-2xl bg-card border border-border/60 p-3">
-      <div className="text-2xl font-semibold tabular-nums">{value}</div>
-      <div className="text-xs text-muted-foreground">{label}</div>
+    <div
+      className="fixed inset-0 z-40 bg-background/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-3xl bg-card border border-border/60 p-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="size-12 rounded-2xl bg-brand-soft grid place-items-center text-2xl">
+            {task.emoji}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold break-words">{task.title}</p>
+            <p className="text-xs text-muted-foreground">
+              {doneSteps}/{task.steps.length} {t("obj_pieces_count")} ·{" "}
+              {task.steps.reduce((a, s) => a + s.durationMinutes, 0)}m
+            </p>
+          </div>
+          <button onClick={onClose} className="size-8 grid place-items-center rounded-full hover:bg-muted">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <ul className="space-y-1.5 mb-5">
+          {task.steps.map((s, i) => (
+            <li
+              key={s.id}
+              className={`flex items-center gap-2.5 text-sm py-1.5 ${
+                s.isCompleted ? "text-muted-foreground line-through" : "text-foreground/80"
+              }`}
+            >
+              <span
+                className={`size-2 rounded-full ${s.isCompleted ? "bg-brand" : "bg-muted-foreground/40"}`}
+              />
+              <span className="flex-1 break-words">{s.title}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">{s.durationMinutes}m</span>
+            </li>
+          ))}
+        </ul>
+
+        <button
+          onClick={onStart}
+          className="w-full h-12 rounded-2xl bg-brand text-brand-foreground font-semibold"
+        >
+          {t("obj_start_work")}
+        </button>
+      </div>
     </div>
   );
 }

@@ -9,17 +9,17 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as StatsRouteImport } from './routes/stats'
-import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as StatsRouteImport } from './routes/stats'
 import { Route as FlowsNewRouteImport } from './routes/flows.new'
 import { Route as FlowsFlowIdIndexRouteImport } from './routes/flows.$flowId.index'
-import { Route as FlowsFlowIdRunRouteImport } from './routes/flows.$flowId.run'
 import { Route as FlowsFlowIdEditRouteImport } from './routes/flows.$flowId.edit'
+import { Route as FlowsFlowIdRunRouteImport } from './routes/flows.$flowId.run'
 
-const StatsRoute = StatsRouteImport.update({
-  id: '/stats',
-  path: '/stats',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -27,9 +27,9 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const StatsRoute = StatsRouteImport.update({
+  id: '/stats',
+  path: '/stats',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FlowsNewRoute = FlowsNewRouteImport.update({
@@ -42,14 +42,14 @@ const FlowsFlowIdIndexRoute = FlowsFlowIdIndexRouteImport.update({
   path: '/flows/$flowId/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const FlowsFlowIdRunRoute = FlowsFlowIdRunRouteImport.update({
-  id: '/flows/$flowId/run',
-  path: '/flows/$flowId/run',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const FlowsFlowIdEditRoute = FlowsFlowIdEditRouteImport.update({
   id: '/flows/$flowId/edit',
   path: '/flows/$flowId/edit',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FlowsFlowIdRunRoute = FlowsFlowIdRunRouteImport.update({
+  id: '/flows/$flowId/run',
+  path: '/flows/$flowId/run',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -123,11 +123,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/stats': {
-      id: '/stats'
-      path: '/stats'
-      fullPath: '/stats'
-      preLoaderRoute: typeof StatsRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -137,11 +137,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/stats': {
+      id: '/stats'
+      path: '/stats'
+      fullPath: '/stats'
+      preLoaderRoute: typeof StatsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/flows/new': {
@@ -158,18 +158,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof FlowsFlowIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/flows/$flowId/run': {
-      id: '/flows/$flowId/run'
-      path: '/flows/$flowId/run'
-      fullPath: '/flows/$flowId/run'
-      preLoaderRoute: typeof FlowsFlowIdRunRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/flows/$flowId/edit': {
       id: '/flows/$flowId/edit'
       path: '/flows/$flowId/edit'
       fullPath: '/flows/$flowId/edit'
       preLoaderRoute: typeof FlowsFlowIdEditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/flows/$flowId/run': {
+      id: '/flows/$flowId/run'
+      path: '/flows/$flowId/run'
+      fullPath: '/flows/$flowId/run'
+      preLoaderRoute: typeof FlowsFlowIdRunRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -187,3 +187,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
